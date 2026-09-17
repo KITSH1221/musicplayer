@@ -1,0 +1,11 @@
+/target
+
+# 本地测试音频：大二进制文件不进版本库
+assets/*.mp3
+assets/*.flac
+assets/*.wav
+assets/*.m4a
+assets/*.ogg
+
+# 从 Windows 复制文件时带过来的附属数据流
+*:Zone.Identifier

@@ -1,13 +1,59 @@
+use lofty::prelude::*;
+use lofty::read_from_path;
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
-use std::fs::File;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::Duration;
-use std::{env, path};
+use std::{
+    env,
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
 
 fn fmt_time(d: Duration) -> String {
     format!("{:02}:{:02}", d.as_secs() / 60, d.as_secs() % 60)
+}
+
+struct Track {
+    path: PathBuf,
+    title: String,
+    artist: String,
+    album: String,
+    duration: Option<Duration>,
+}
+
+impl Track {
+    fn from_path(path: PathBuf) -> Self {
+        // ① 先用文件名做兜底标题——注意必须在 path 被移进结构体之前算
+        let fallback = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let mut track = Track {
+            path,
+            title: fallback,
+            artist: "unknown".to_string(),
+            album: "unknown".to_string(),
+            duration: None,
+        };
+        if let Ok(tagged) = read_from_path(&track.path) {
+            track.duration = Some(tagged.properties().duration());
+            // ② 从标签中提取标题、艺术家、专辑
+            if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
+                if let Some(t) = tag.title() {
+                    track.title = t.into_owned();
+                }
+                if let Some(a) = tag.artist() {
+                    track.artist = a.into_owned();
+                }
+                if let Some(a) = tag.album() {
+                    track.album = a.into_owned();
+                }
+            }
+        }
+        track
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let playlist = if target.is_dir() {
         scan_audio(&target)?
     } else {
-        vec![target]
+        vec![Track::from_path(target)]
     };
     if playlist.is_empty() {
         eprintln!("no audio files found");
@@ -30,22 +76,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("playlist {}", playlist.len());
-    for (i, p) in playlist.iter().enumerate() {
-        println!(
-            "{:2}. {}",
-            i + 1,
-            p.file_name().unwrap_or_default().to_string_lossy()
-        );
+    for (i, t) in playlist.iter().enumerate() {
+        let dur = t.duration.map(fmt_time).unwrap_or_else(|| "--:--".into());
+        println!("  {:2}. {} — {}  [{}]", i + 1, t.artist, t.title, dur);
     }
 
     let mut sink = DeviceSinkBuilder::open_default_sink()?;
     sink.log_on_drop(false);
     let player = Player::connect_new(sink.mixer());
 
-    for path in playlist {
-        let file = File::open(&path).map_err(|e| format!("{} , {e}", path.display()))?;
+    for t in playlist {
+        let file = File::open(&t.path).map_err(|e| format!("{} , {e}", t.path.display()))?;
         let source = Decoder::try_from(file)?;
         let total_duration = source.total_duration();
+        println!("\n▶ {} — {}", t.artist, t.title);
 
         player.append(source);
 
@@ -70,14 +114,15 @@ fn is_audio(path: &Path) -> bool {
         Some("mp3" | "wav" | "ogg" | "m4a" | "aac" | "flac")
     }
 }
-fn scan_audio(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+fn scan_audio(dir: &Path) -> std::io::Result<Vec<Track>> {
+    let mut tracks = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() && is_audio(&path) {
-            files.push(path);
+            tracks.push(Track::from_path(path));
         }
     }
-    Ok(files)
+    tracks.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(tracks)
 }

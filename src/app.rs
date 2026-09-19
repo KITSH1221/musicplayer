@@ -26,6 +26,9 @@ pub struct App {
     /// 顶部状态文字
     pub(crate) status: String,
 
+    /// 已经读过标签的曲目数量（用于进度角标）
+    loaded: usize,
+
     // ---- 音频后端：保持私有，只通过下面两个方法暴露 ----
     audio: Audio,
 
@@ -43,6 +46,7 @@ impl App {
             list_state: ListState::default(),
             playing: None,
             status: "Enter: play  ·  Space: pause".to_string(),
+            loaded: 0,
             audio: Audio::new()?,
             meta_rx,
         })
@@ -56,7 +60,7 @@ impl App {
     /// 而不是让整个程序退出——用户点了一首坏文件，不该有这种代价。
     fn play_index(&mut self, idx: usize) {
         // 后台线程可能还没排到这首，先同步补读，这样状态栏立刻就是对的
-        self.playlist[idx].ensure_meta();
+        self.ensure_loaded(idx);
         let label = self.playlist[idx].label();
 
         // `&mut self.audio` 和 `&self.playlist` 借用的是不同字段，
@@ -74,10 +78,19 @@ impl App {
 
     /// 光标移动后立刻读一次当前这首的标签，不用等后台线程
     fn load_cursor_track(&mut self) {
-        let idx = self.cursor;
-        if let Some(track) = self.playlist.get_mut(idx) {
-            track.ensure_meta();
+        self.ensure_loaded(self.cursor);
+    }
+
+    /// 同步补读某一首的标签（如果还没读），并更新已加载计数
+    fn ensure_loaded(&mut self, idx: usize) {
+        let Some(track) = self.playlist.get_mut(idx) else {
+            return;
+        };
+        if track.is_loaded() {
+            return;
         }
+        track.ensure_meta();
+        self.loaded += 1;
     }
 
     // ---------- 每帧更新 ----------
@@ -105,10 +118,21 @@ impl App {
     /// 非阻塞的 `try_recv`：有就收，没有就继续画下一帧。
     fn apply_loaded_meta(&mut self) {
         while let Ok((idx, meta)) = self.meta_rx.try_recv() {
-            if let Some(track) = self.playlist.get_mut(idx) {
-                track.set_meta(meta);
+            let Some(track) = self.playlist.get_mut(idx) else {
+                continue;
+            };
+            // 可能已经被 ensure_loaded 抢先读过了，别重复计数
+            if track.is_loaded() {
+                continue;
             }
+            track.set_meta(meta);
+            self.loaded += 1;
         }
+    }
+
+    /// 标签加载进度 (已加载, 总数)
+    pub fn load_progress(&self) -> (usize, usize) {
+        (self.loaded, self.playlist.len())
     }
 
     // ---------- 键盘 ----------

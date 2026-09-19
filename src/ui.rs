@@ -7,6 +7,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Gauge, List, ListItem, Paragraph},
 };
 
@@ -14,7 +15,7 @@ use crate::{app::App, util::fmt_time};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [header, body, gauge_area, help] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(4), // 边框占 2 行，内容区剩 2 行，刚好放状态 + 设备信息
         Constraint::Min(1),
         Constraint::Length(3),
         Constraint::Length(1),
@@ -46,7 +47,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .collect();
 
     let list = List::new(items)
-        .block(Block::bordered().title(" Playlist "))
+        .block(
+            Block::bordered()
+                .title(" Playlist ")
+                .title_top(load_badge(app)),
+        )
         .highlight_symbol("▶ ")
         .highlight_style(
             Style::new()
@@ -77,4 +82,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Paragraph::new("Enter play  ·  Space pause  ·  ←/→ ±5s  ·  ↑/↓ select  ·  q quit"),
         help,
     );
+}
+
+/// 右上角角标：加载中显示 `loading 342/2000`，加载完显示总数
+fn load_badge(app: &App) -> Line<'static> {
+    let (loaded, total) = app.load_progress();
+
+    let (text, color) = if loaded < total {
+        (format!(" loading {loaded}/{total} "), Color::Yellow)
+    } else {
+        (format!(" {total} tracks "), Color::DarkGray)
+    };
+
+    Line::from(Span::styled(text, Style::new().fg(color))).right_aligned()
 }

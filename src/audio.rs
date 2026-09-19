@@ -7,8 +7,8 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::{fs::File, path::Path, time::Duration};
 
 use crate::{
-    spectrum::{self, Analyzer, SpectrumTap},
     util::BoxError,
+    waveform::{self, AudioTap, Waveform},
 };
 
 pub struct Audio {
@@ -22,8 +22,8 @@ pub struct Audio {
     /// 当前曲目的总时长
     total: Option<Duration>,
 
-    /// 频谱分析器。每首歌换一个新的，绑定到那首歌的环形缓冲
-    spectrum: Analyzer,
+    /// 波形分析器。每首歌换一个新的，绑定到那首歌的环形缓冲
+    waveform: Waveform,
 }
 
 impl Audio {
@@ -33,14 +33,14 @@ impl Audio {
         sink.log_on_drop(false);
         let player = Player::connect_new(sink.mixer());
 
-        // 还没开始播，先给一个没有音频流的分析器（柱子会一直保持 0）
-        let (_producer, consumer) = spectrum::ring();
+        // 还没开始播，先给一个没有音频流的分析器（波形会一直是一条直线）
+        let (_producer, consumer) = waveform::ring();
 
         Ok(Audio {
             player,
             sink,
             total: None,
-            spectrum: Analyzer::new(consumer, 44_100.0),
+            waveform: Waveform::new(consumer),
         })
     }
 
@@ -54,9 +54,8 @@ impl Audio {
         let source = Decoder::try_from(file)?;
 
         // 给这首歌建一个新的环形缓冲，把解码器包上一层分流器
-        let sample_rate = source.sample_rate().get() as f32;
-        let (producer, consumer) = spectrum::ring();
-        let tap = SpectrumTap::new(source, producer);
+        let (producer, consumer) = waveform::ring();
+        let tap = AudioTap::new(source, producer);
 
         self.total = tap.total_duration();
         self.player.stop();
@@ -64,18 +63,18 @@ impl Audio {
         self.player.play(); // 清掉可能残留的暂停状态
 
         // 换掉旧的分析器（旧的那个会连同旧环形缓冲一起被丢弃）
-        self.spectrum = Analyzer::new(consumer, sample_rate);
+        self.waveform = Waveform::new(consumer);
         Ok(())
     }
 
-    /// 每帧调用一次，推进频谱计算。
-    pub fn update_spectrum(&mut self) {
-        self.spectrum.update();
+    /// 每帧调用一次，推进波形计算。
+    pub fn update_waveform(&mut self) {
+        self.waveform.update();
     }
 
-    /// 每根频谱柱子的高度，0.0~1.0
-    pub fn spectrum(&self) -> &[f32] {
-        self.spectrum.levels()
+    /// 波形的振幅包络，每点 0.0~1.0
+    pub fn waveform(&self) -> &[f32] {
+        self.waveform.levels()
     }
 
     pub fn toggle_pause(&mut self) {

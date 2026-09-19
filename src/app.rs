@@ -103,7 +103,7 @@ impl App {
     /// 每帧调用一次：收下后台读好的标签，并处理"一首歌自然播完"。
     pub fn tick(&mut self) {
         self.apply_loaded_meta();
-        self.audio.update_spectrum();
+        self.audio.update_waveform();
 
         let Some(idx) = self.playing else { return };
         if !self.audio.is_finished() {
@@ -206,9 +206,9 @@ impl App {
         self.notice.as_deref()
     }
 
-    /// 频谱柱高，0.0~1.0
-    pub fn spectrum(&self) -> &[f32] {
-        self.audio.spectrum()
+    /// 波形的振幅包络，每点 0.0~1.0
+    pub fn waveform(&self) -> &[f32] {
+        self.audio.waveform()
     }
 }
 

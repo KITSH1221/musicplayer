@@ -10,9 +10,9 @@
 mod app;
 mod audio;
 mod library;
-mod spectrum;
 mod ui;
 mod util;
+mod waveform;
 
 use ratatui::{
     DefaultTerminal,

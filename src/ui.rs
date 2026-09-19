@@ -33,22 +33,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // 整体留白。界面立刻"松"下来，是极简风格最廉价也最有效的一招。
     let area = frame.area().inner(Margin::new(2, 1));
 
-    let [
-        header,
-        now,
-        _,
-        list_area,
-        _,
-        spectrum_area,
-        progress_area,
-        help,
-    ] = Layout::vertical([
+    let [header, now, _, wave_area, _, list_area, progress_area, help] = Layout::vertical([
         Constraint::Length(1), // 标题 + 状态
         Constraint::Length(1), // 正在播放
         Constraint::Length(1), // 留白
-        Constraint::Min(1),    // 列表
+        Constraint::Length(6), // 波形 ← 放在播放列表上面
         Constraint::Length(1), // 留白
-        Constraint::Length(5), // 频谱
+        Constraint::Min(1),    // 列表
         Constraint::Length(1), // 进度
         Constraint::Length(1), // 帮助
     ])
@@ -57,8 +48,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(header_line(app, area.width)), header);
     frame.render_widget(Paragraph::new(now_playing(app)), now);
 
+    draw_waveform(frame, app.waveform(), wave_area);
     draw_list(frame, app, list_area);
-    draw_spectrum(frame, app.spectrum(), spectrum_area);
     draw_progress(frame, app, progress_area);
 
     frame.render_widget(
@@ -176,54 +167,120 @@ fn track_line(track: &Track, is_playing: bool, width: usize) -> Line<'static> {
 }
 
 // ============================================================
-//  频谱
+//  波形
 // ============================================================
+//
+// 用**盲文点阵**画，而不是方块字符。
+//
+// 一个盲文字符（U+2800 起）内部是 2 列 × 4 行的点阵，所以：
+//   - 纵向分辨率 = 每格 4 级（方块字符只有 1 级）
+//   - 横向分辨率 = 每格 2 列（直接翻倍）
+//
+// 结果是能画出一条**平滑的细线**，而不是一堆方块。
+// 代价是要求终端字体包含盲文点阵（Cascadia / JetBrains Mono / Fira Code /
+// DejaVu Sans Mono 都有）。
 
-/// 半格字符：下标 = 这一格从底部算起被填了 1/8 的几份
-const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+/// 把包络重采样到点阵，算出每个字符格的盲文点位。
+///
+/// 返回值长度 = `width * height`，每个字节是 8 个点的位掩码。
+/// 抽成纯函数是为了能脱离终端做单元测试。
+fn braille_cells(levels: &[f32], width: usize, height: usize) -> Vec<u8> {
+    let mut cells = vec![0u8; width * height];
+    if width == 0 || height == 0 {
+        return cells;
+    }
 
-fn draw_spectrum(frame: &mut Frame, levels: &[f32], area: Rect) {
+    let dot_cols = width * 2;
+    let dot_rows = height * 4;
+    let center = dot_rows / 2; // 中线（从上往下数的点行号）
+
+    let up_room = center; // 中线以上还有几行可用
+    let down_room = dot_rows - 1 - center; // 中线以下还有几行可用
+
+    for x in 0..dot_cols {
+        let amp = resample(levels, x, dot_cols).clamp(0.0, 1.0);
+        let up = (amp * up_room as f32).round() as usize;
+        let down = (amp * down_room as f32).round() as usize;
+
+        // 上下各画一条包络线，中间自然形成一个"波浪带"
+        set_dot(&mut cells, width, height, x, center - up);
+        set_dot(&mut cells, width, height, x, center + down);
+    }
+
+    cells
+}
+
+/// 点亮一个点。坐标超出范围就忽略（防御性写法，避免 panic）。
+fn set_dot(cells: &mut [u8], width: usize, height: usize, x: usize, y: usize) {
+    let cx = x / 2;
+    let cy = y / 4;
+    if cx >= width || cy >= height {
+        return;
+    }
+    cells[cy * width + cx] |= dot_bit(x % 2, y % 4);
+}
+
+/// 盲文点阵的位序（来自 Unicode 标准）：
+///
+/// ```text
+///   列0 列1
+///   0x01 0x08   ← 第 0 行
+///   0x02 0x10   ← 第 1 行
+///   0x04 0x20   ← 第 2 行
+///   0x40 0x80   ← 第 3 行
+/// ```
+fn dot_bit(dx: usize, dy: usize) -> u8 {
+    match (dx, dy) {
+        (0, 0) => 0x01,
+        (1, 0) => 0x08,
+        (0, 1) => 0x02,
+        (1, 1) => 0x10,
+        (0, 2) => 0x04,
+        (1, 2) => 0x20,
+        (0, 3) => 0x40,
+        (1, 3) => 0x80,
+        _ => 0,
+    }
+}
+
+fn braille_char(bits: u8) -> char {
+    char::from_u32(0x2800 + bits as u32).unwrap_or(' ')
+}
+
+fn draw_waveform(frame: &mut Frame, levels: &[f32], area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let cols = area.width as usize;
-    let rows = area.height as usize;
-    let sub_rows = rows * 8; // 每格 8 级，所以总共有 rows*8 级高度
+    let width = area.width as usize;
+    let height = area.height as usize;
+    let cells = braille_cells(levels, width, height);
+
     let buf = frame.buffer_mut();
-
-    for c in 0..cols {
-        let level = column_level(levels, c, cols);
-        let filled = (level * sub_rows as f32).round() as usize;
-
-        for r in 0..rows {
-            // r = 0 是最上面一行；从底部往上算这一格该填多少
-            let from_bottom = (rows - 1 - r) * 8;
-            let sub = filled.saturating_sub(from_bottom).min(8);
-            if sub == 0 {
+    for cy in 0..height {
+        for cx in 0..width {
+            let bits = cells[cy * width + cx];
+            if bits == 0 {
                 continue;
             }
-
-            let position = (area.x + c as u16, area.y + r as u16);
+            let position = (area.x + cx as u16, area.y + cy as u16);
             if let Some(cell) = buf.cell_mut(position) {
-                cell.set_char(BLOCKS[sub]);
+                cell.set_char(braille_char(bits));
                 cell.set_style(Style::new().fg(ACCENT));
             }
         }
     }
 }
 
-/// 把 `BANDS` 个频段重采样成 `cols` 列（列多就复用，列少就取最大）
-fn column_level(levels: &[f32], c: usize, cols: usize) -> f32 {
-    if levels.is_empty() || cols == 0 {
+/// 把 `levels` 重采样成 `n` 个值：某一段里取最大值。
+/// 目标比源短就归并（取峰值），比源长就复用。
+fn resample(levels: &[f32], i: usize, n: usize) -> f32 {
+    if levels.is_empty() || n == 0 {
         return 0.0;
     }
-    let start = c * levels.len() / cols;
-    let end = ((c + 1) * levels.len() / cols)
-        .max(start + 1)
-        .min(levels.len());
-
-    levels[start..end].iter().copied().fold(0.0, f32::max)
+    let a = i * levels.len() / n;
+    let b = ((i + 1) * levels.len() / n).max(a + 1).min(levels.len());
+    levels[a..b].iter().copied().fold(0.0, f32::max)
 }
 
 // ============================================================
@@ -277,4 +334,80 @@ fn justified(left: Span<'static>, right: Span<'static>, width: u16) -> Line<'sta
         .saturating_sub(left.width() + right.width())
         .max(1);
     Line::from(vec![left, Span::raw(" ".repeat(pad)), right])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::waveform::POINTS;
+
+    #[test]
+    fn braille_dot_bits_match_the_unicode_layout() {
+        let cases = [
+            ((0, 0), 0x01),
+            ((1, 0), 0x08),
+            ((0, 1), 0x02),
+            ((1, 1), 0x10),
+            ((0, 2), 0x04),
+            ((1, 2), 0x20),
+            ((0, 3), 0x40),
+            ((1, 3), 0x80),
+        ];
+        for ((dx, dy), expected) in cases {
+            let mut cells = vec![0u8; 1];
+            set_dot(&mut cells, 1, 1, dx, dy);
+            assert_eq!(cells[0], expected, "点 ({dx},{dy}) 的位不对");
+        }
+    }
+
+    #[test]
+    fn braille_char_starts_at_u2800() {
+        assert_eq!(braille_char(0x00), '\u{2800}');
+        assert_eq!(braille_char(0x01), '\u{2801}');
+        assert_eq!(braille_char(0xFF), '\u{28FF}');
+    }
+
+    #[test]
+    fn silence_draws_a_flat_line_through_the_centre() {
+        let levels = vec![0.0f32; POINTS];
+        let (w, h) = (4usize, 2usize);
+        let cells = braille_cells(&levels, w, h);
+
+        let center = h * 4 / 2; // 点行号
+        let cy = center / 4;
+        let dy = center % 4;
+
+        for cx in 0..w {
+            for dx in 0..2 {
+                assert!(
+                    cells[cy * w + cx] & dot_bit(dx, dy) != 0,
+                    "第 {} 列的中线没画出来",
+                    cx * 2 + dx
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_amplitude_reaches_top_and_bottom_rows() {
+        let levels = vec![1.0f32; POINTS];
+        let (w, h) = (4usize, 2usize);
+        let cells = braille_cells(&levels, w, h);
+
+        assert!(cells[..w].iter().any(|&c| c != 0), "顶行没画到");
+        assert!(cells[(h - 1) * w..].iter().any(|&c| c != 0), "底行没画到");
+    }
+
+    #[test]
+    fn out_of_range_dots_are_ignored() {
+        let mut cells = vec![0u8; 2];
+        set_dot(&mut cells, 2, 1, 999, 999); // 不该 panic
+        assert!(cells.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn braille_cells_handles_empty_and_tiny_areas() {
+        assert!(braille_cells(&[], 0, 0).is_empty());
+        assert_eq!(braille_cells(&[1.0], 1, 1).len(), 1);
+    }
 }

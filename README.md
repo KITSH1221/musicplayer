@@ -1,6 +1,6 @@
 # musicplayer
 
-A minimal terminal music player written in Rust — playlist, metadata, live spectrum analyser.
+A minimal terminal music player written in Rust — playlist, metadata, live waveform visualiser.
 
 ![status](https://img.shields.io/badge/status-learning%20project-blue)
 
@@ -8,10 +8,15 @@ A minimal terminal music player written in Rust — playlist, metadata, live spe
   musicplayer                                            48000 Hz · 2 ch
   ♪  Jigsaw Falling Into Place  ·  Radiohead
 
+  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡠⠔⠒⠊⠉⠑⠒⠤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+  ⠔⠒⠉⠉⠉⠉⠑⠒⠤⠤⠤⠤⠤⠔⠊⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠒⠤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠑⠒⠒⠤⠤⢄⣀⣀⣀⣀⣀⣀⣀⣀⣀⡠⠤⠤⠒⠒⠒⠉⠉⠉⠉⠉⠉
+  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⡠⠤⠤⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠤⠤⠤⣀⣀⣀⣀⠀⣀⣀⣀
+  ⠤⢄⣀⣀⣀⣀⣀⠤⠤⠔⠒⠒⠢⠤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡠⠔⠊⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀
+  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠒⠢⠤⣀⣀⡠⠤⠒⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+
   ▸ ♪ Jigsaw Falling Into Place                Radiohead  04:08
       When You Sleep                 My Bloody Valentine  04:11
-
-  ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▁▂▃▄▅▆▇█▇▆▅▄▃▂
 
   01:23  ──────────────────────────────────────────  04:08
 
@@ -24,8 +29,8 @@ A minimal terminal music player written in Rust — playlist, metadata, live spe
 - **Recursive folder scanning** — point it at a directory, it walks subdirectories
 - **Lazy tag loading** — scanning only collects paths (fast), tags are read by a background
   thread and stream into the list, so a large library never blocks the UI
-- **Live spectrum analyser** — a lock-free audio tap feeds `rustfft`, rendered with half-block
-  characters
+- **Live waveform visualiser** — a lock-free audio tap feeds an amplitude envelope, drawn as a
+  smooth braided line using braille dot patterns
 - **Graceful degradation** — files with no tags, corrupted files, and unreadable directories are
   skipped or shown with fallbacks instead of crashing the app
 - **Minimal UI** — no borders, two colours, whitespace-based grouping
@@ -112,7 +117,7 @@ src/
 ├── ui.rs         rendering (minimal style, no borders)
 ├── audio.rs      playback backend — wraps rodio
 ├── library.rs    Track model, directory scanning, tag reading
-├── spectrum.rs   lock-free audio tap + FFT analysis
+├── waveform.rs   lock-free audio tap + amplitude envelope
 └── util.rs       small shared helpers
 ```
 
@@ -126,25 +131,25 @@ main ──► app ──► audio ──► rodio
  └────► util
 ```
 
-`library.rs` and `spectrum.rs` contain no I/O to the terminal or the audio device, so they are
+`library.rs` and `waveform.rs` contain no I/O to the terminal or the audio device, so they are
 unit-testable in isolation.
 
 ### Audio pipeline
 
 ```
-decoder ──► SpectrumTap ──► Player ──► Mixer ──► cpal callback ──► speakers
-                │
-                │ push (lock-free)
-                ▼
-          rtrb ring buffer
-                │ pop (once per frame)
-                ▼
-          Analyzer: window → FFT → log-spaced bands → decay smoothing
+decoder ──► AudioTap ──► Player ──► Mixer ──► cpal callback ──► speakers
+               │
+               │ push (lock-free)
+               ▼
+         rtrb ring buffer
+               │ pop (once per frame)
+               ▼
+         Waveform: peak envelope → temporal smoothing → braille line
 ```
 
 The tap runs on the **audio callback thread**, where blocking is not allowed. `rtrb` is a lock-free
 single-producer/single-consumer queue: when it is full, samples are dropped rather than waited for.
-Spectrum data is disposable; audio must never stutter.
+Visualisation data is disposable; audio must never stutter.
 
 ### Async tag loading
 
@@ -165,7 +170,6 @@ Keeping those two states distinct is what prevents untagged files from being stu
 | [`rodio`](https://crates.io/crates/rodio) | playback: decoding + device output + player controls |
 | [`lofty`](https://crates.io/crates/lofty) | audio metadata (ID3v2, Vorbis comments, …) |
 | [`ratatui`](https://crates.io/crates/ratatui) | terminal UI |
-| [`rustfft`](https://crates.io/crates/rustfft) | FFT for the spectrum analyser |
 | [`rtrb`](https://crates.io/crates/rtrb) | lock-free ring buffer for the audio tap |
 
 ## Tests
@@ -175,8 +179,10 @@ cargo test
 ```
 
 - `library` — extension matching, recursive scan, and that scanning stays lazy
-- `spectrum` — the tap forwards audio unchanged while filling the ring buffer; a 1000 Hz sine
-  lands in the expected frequency band; levels decay back to zero
+- `waveform` — the tap forwards audio unchanged while filling the ring buffer; the envelope
+  follows amplitude, stays within range, and decays to a flat line when the music stops
+- `ui` — the braille dot bit layout matches the Unicode standard, silence draws a flat centre
+  line, and full amplitude reaches the top and bottom rows
 
 ## Performance
 
@@ -186,15 +192,16 @@ Measured on this machine, decoding a 4:08 MP3 (≈22 M samples):
 | --- | --- | --- |
 | binary size | 81 MB | 5.7 MB |
 | full decode | 10.8 s | 0.29 s |
-| one 2048-point FFT | 301 µs | 6.3 µs |
 
 Use `--release` for actual listening.
 
 ## Known limitations
 
 - Tracks are played one at a time, so there is a small gap between them (no gapless playback)
-- The spectrum mixes both channels to mono, so it cannot show stereo information
-- Seeking through a `SpectrumTap` relies on `Source::try_seek` being forwarded
+- The waveform mixes both channels to mono, so it cannot show stereo information
+- Seeking through an `AudioTap` relies on `Source::try_seek` being forwarded
+- The waveform uses braille dot patterns (`U+2800`–`U+28FF`), which requires a terminal font that
+  covers them (Cascadia Mono, JetBrains Mono, Fira Code and DejaVu Sans Mono all do)
 - Very large libraries still parse every file's tags on startup (in the background, but the list
   fills in progressively)
 - Layout assumes a dark terminal background and roughly 20+ rows

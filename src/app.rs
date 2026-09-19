@@ -26,8 +26,8 @@ pub struct App {
     pub(crate) list_state: ListState,
     /// 正在播放的曲目下标
     pub(crate) playing: Option<usize>,
-    /// 顶部状态文字
-    pub(crate) status: String,
+    /// 临时通知（比如打不开文件）。为空就不显示任何东西。
+    pub(crate) notice: Option<String>,
 
     /// 已经读过标签的曲目数量（用于进度角标）
     loaded: usize,
@@ -48,7 +48,7 @@ impl App {
             cursor: 0,
             list_state: ListState::default(),
             playing: None,
-            status: "Enter: play  ·  Space: pause".to_string(),
+            notice: None,
             loaded: 0,
             audio: Audio::new()?,
             meta_rx,
@@ -62,19 +62,21 @@ impl App {
     /// 这里故意不返回 `Result`：在 TUI 里，错误应该变成界面上的提示，
     /// 而不是让整个程序退出——用户点了一首坏文件，不该有这种代价。
     fn play_index(&mut self, idx: usize) {
-        // 后台线程可能还没排到这首，先同步补读，这样状态栏立刻就是对的
+        // 后台线程可能还没排到这首，先同步补读，这样"正在播放"那一行立刻就是对的
         self.ensure_loaded(idx);
-        let label = self.playlist[idx].label();
 
         // `&mut self.audio` 和 `&self.playlist` 借用的是不同字段，
         // 编译器允许这种"不相交借用"，所以不需要 clone 路径
         match self.audio.play(self.playlist[idx].path()) {
             Ok(()) => {
                 self.playing = Some(idx);
-                self.status = format!("▶ {label}");
+                self.notice = None;
             }
             Err(e) => {
-                self.status = format!("⚠ Cannot open {}: {e}", self.playlist[idx].path().display());
+                self.notice = Some(format!(
+                    "cannot open {}: {e}",
+                    self.playlist[idx].path().display()
+                ));
             }
         }
     }
@@ -113,7 +115,6 @@ impl App {
             self.play_index(idx + 1);
         } else {
             self.playing = None;
-            self.status = "Playback finished".to_string();
         }
     }
 
@@ -198,6 +199,11 @@ impl App {
 
     pub fn device_info(&self) -> String {
         self.audio.device_info()
+    }
+
+    /// 当前要显示的通知，例如打不开文件时的错误
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
     }
 
     /// 频谱柱高，0.0~1.0

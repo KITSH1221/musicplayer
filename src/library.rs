@@ -13,8 +13,6 @@ use std::{
     time::Duration,
 };
 
-use crate::util::fmt_time;
-
 /// 从文件里读出来的信息。
 ///
 /// 注意 `meta: Some(..)` 表示"读过了"，不代表"读到内容丰富"——
@@ -71,23 +69,21 @@ impl Track {
             .into_owned()
     }
 
-    /// 列表里那一行
-    pub fn display_line(&self) -> String {
+    /// 标题。没读到标签就用文件名（永远不会是空的）。
+    pub fn title(&self) -> String {
         match &self.meta {
-            Some(m) => {
-                let dur = m.duration.map(fmt_time).unwrap_or_else(|| "--:--".into());
-                format!("{} — {}  [{}]", m.artist, m.title, dur)
-            }
+            Some(m) => m.title.clone(),
             None => self.fallback_name(),
         }
     }
 
-    /// 状态栏用的名字
-    pub fn label(&self) -> String {
-        match &self.meta {
-            Some(m) => format!("{} — {}", m.artist, m.title),
-            None => self.fallback_name(),
-        }
+    /// 艺术家。**没读到标签时返回 `None`**，让 UI 自己决定要不要显示占位。
+    pub fn artist(&self) -> Option<&str> {
+        self.meta.as_ref().map(|m| m.artist.as_str())
+    }
+
+    pub fn duration(&self) -> Option<Duration> {
+        self.meta.as_ref().and_then(|m| m.duration)
     }
 }
 
@@ -220,7 +216,8 @@ mod tests {
         assert!(!tracks[0].is_loaded()); // 扫描阶段不该读标签
 
         // 兜底名字来自文件名
-        assert_eq!(tracks[0].display_line(), "fake");
+        assert_eq!(tracks[0].title(), "fake");
+        assert_eq!(tracks[0].artist(), None);
 
         fs::remove_dir_all(&root).ok();
     }

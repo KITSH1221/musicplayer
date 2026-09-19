@@ -1,5 +1,10 @@
 use lofty::prelude::*;
 use lofty::read_from_path;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::layout::{Constraint, Layout};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Block, List, ListState, Paragraph};
+use ratatui::{DefaultTerminal, Frame};
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use std::{
     env,
@@ -74,37 +79,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("no audio files found");
         std::process::exit(1);
     }
+    let mut terminal = ratatui::init();
+    let result = run(&mut terminal, &playlist);
+    ratatui::restore(); // 无论如何都要恢复终端
+    result?;
+    Ok(())
+}
 
-    println!("playlist {}", playlist.len());
-    for (i, t) in playlist.iter().enumerate() {
-        let dur = t.duration.map(fmt_time).unwrap_or_else(|| "--:--".into());
-        println!("  {:2}. {} — {}  [{}]", i + 1, t.artist, t.title, dur);
-    }
-
-    let mut sink = DeviceSinkBuilder::open_default_sink()?;
-    sink.log_on_drop(false);
-    let player = Player::connect_new(sink.mixer());
-
-    for t in playlist {
-        let file = File::open(&t.path).map_err(|e| format!("{} , {e}", t.path.display()))?;
-        let source = Decoder::try_from(file)?;
-        let total_duration = source.total_duration();
-        println!("\n▶ {} — {}", t.artist, t.title);
-
-        player.append(source);
-
-        while !player.empty() {
-            let pos = player.get_pos();
-            match total_duration {
-                Some(d) => println!("{} / {}", fmt_time(pos), fmt_time(d)),
-                None => println!("{}", fmt_time(pos)),
+fn run(terminal: &mut DefaultTerminal, playlist: &[Track]) -> std::io::Result<()> {
+    let mut cursor = 0;
+    loop {
+        terminal.draw(|frame| draw(frame, playlist, cursor))?;
+        if event::poll(Duration::from_millis(100))? {
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+            if key.kind != KeyEventKind::Press {
+                continue;
             }
-            std::io::stdout().flush().ok();
-            thread::sleep(Duration::from_millis(200));
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if cursor + 1 < playlist.len() {
+                        cursor += 1
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    cursor = cursor.saturating_sub(1);
+                }
+                KeyCode::Home => cursor = 0,
+                KeyCode::End => cursor = playlist.len().saturating_sub(1),
+                _ => {}
+            }
         }
-        println!("");
     }
     Ok(())
+}
+
+fn draw(frame: &mut Frame, playlist: &[Track], cursor: usize) {
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(3),
+    ])
+    .areas(frame.area());
+
+    frame.render_widget(
+        Paragraph::new("musicplayer").block(Block::bordered().title("player")),
+        header,
+    );
+    let items: Vec<String> = playlist
+        .iter()
+        .map(|t| {
+            let dur = t.duration.map(fmt_time).unwrap_or_else(|| "--:--".into());
+            format!("{} — {}  [{}]", t.artist, t.title, dur)
+        })
+        .collect();
+    let list = List::new(items)
+        .block(Block::bordered().title(" PlayList "))
+        .highlight_symbol("▶ ")
+        .highlight_style(
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+    let mut state = ListState::default().with_selected(Some(cursor));
+    frame.render_stateful_widget(list, body, &mut state);
+
+    frame.render_widget(Paragraph::new("[↑/↓ 或 k/j] select    [q] quit"), footer);
 }
 
 fn is_audio(path: &Path) -> bool {

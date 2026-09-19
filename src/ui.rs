@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Gauge, List, Paragraph},
+    widgets::{Block, Gauge, List, ListItem, Paragraph},
 };
 
 use crate::{app::App, util::fmt_time};
@@ -29,13 +29,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
 
     // ---- 中部：歌曲列表，正在播放的那首前面加 ♪ ----
-    let items: Vec<String> = app
+    // 标签还没读到的行先显示文件名，并用暗色区分
+    let items: Vec<ListItem> = app
         .playlist
         .iter()
         .enumerate()
         .map(|(i, t)| {
             let mark = if app.playing == Some(i) { "♪ " } else { "  " };
-            format!("{mark}{}", t.display_line())
+            let item = ListItem::new(format!("{mark}{}", t.display_line()));
+            if t.is_loaded() {
+                item
+            } else {
+                item.style(Style::new().fg(Color::DarkGray))
+            }
         })
         .collect();
 

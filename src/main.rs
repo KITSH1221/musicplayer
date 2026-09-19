@@ -34,7 +34,7 @@ fn main() -> Result<(), BoxError> {
     let playlist = if target.is_dir() {
         scan_audio(&target)?
     } else {
-        vec![Track::from_path(target)]
+        vec![Track::new(target)]
     };
 
     if playlist.is_empty() {

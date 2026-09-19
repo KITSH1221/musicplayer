@@ -10,6 +10,7 @@
 mod app;
 mod audio;
 mod library;
+mod spectrum;
 mod ui;
 mod util;
 
@@ -66,7 +67,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            if app.handle_key(key.code) {
+            if app.handle_key(key) {
                 break;
             }
         }

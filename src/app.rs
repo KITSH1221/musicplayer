@@ -1,7 +1,10 @@
 //! 应用状态层：把"界面状态"和"播放状态"装在一起，
 //! 并提供键盘处理和每帧推进。
 
-use ratatui::{crossterm::event::KeyCode, widgets::ListState};
+use ratatui::{
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    widgets::ListState,
+};
 use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver},
@@ -98,6 +101,7 @@ impl App {
     /// 每帧调用一次：收下后台读好的标签，并处理"一首歌自然播完"。
     pub fn tick(&mut self) {
         self.apply_loaded_meta();
+        self.audio.update_spectrum();
 
         let Some(idx) = self.playing else { return };
         if !self.audio.is_finished() {
@@ -137,9 +141,19 @@ impl App {
 
     // ---------- 键盘 ----------
 
-    /// 返回 true 表示要退出。
-    pub fn handle_key(&mut self, code: KeyCode) -> bool {
-        match code {
+    /// 处理一个按键。返回 true 表示要退出。
+    ///
+    /// 这里收的是完整的 `KeyEvent` 而不是只有 `KeyCode`，原因有两个：
+    /// 1. raw mode 下 Ctrl+C 不再产生 SIGINT，它只是普通按键 `Char('c')` + CONTROL，
+    ///    看不到修饰键就完全处理不了它；
+    /// 2. 只看 `code` 会让 Ctrl+Q 也匹配 `Char('q')`，莫名其妙地退出。
+    pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // Ctrl+C / Ctrl+Q 一律退出
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q'));
+        }
+
+        match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return true,
 
             KeyCode::Down | KeyCode::Char('j') => {
@@ -170,6 +184,7 @@ impl App {
             KeyCode::Left => self.audio.seek_by(-5.0),
             KeyCode::Right => self.audio.seek_by(5.0),
 
+            // 裸的 c 什么都不做（Ctrl+C 已经在上面处理过了）
             _ => {}
         }
         false
@@ -183,6 +198,11 @@ impl App {
 
     pub fn device_info(&self) -> String {
         self.audio.device_info()
+    }
+
+    /// 频谱柱高，0.0~1.0
+    pub fn spectrum(&self) -> &[f32] {
+        self.audio.spectrum()
     }
 }
 

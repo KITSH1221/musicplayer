@@ -6,7 +6,10 @@
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::{fs::File, path::Path, time::Duration};
 
-use crate::util::BoxError;
+use crate::{
+    spectrum::{self, Analyzer, SpectrumTap},
+    util::BoxError,
+};
 
 pub struct Audio {
     player: Player,
@@ -18,6 +21,9 @@ pub struct Audio {
 
     /// 当前曲目的总时长
     total: Option<Duration>,
+
+    /// 频谱分析器。每首歌换一个新的，绑定到那首歌的环形缓冲
+    spectrum: Analyzer,
 }
 
 impl Audio {
@@ -27,10 +33,14 @@ impl Audio {
         sink.log_on_drop(false);
         let player = Player::connect_new(sink.mixer());
 
+        // 还没开始播，先给一个没有音频流的分析器（柱子会一直保持 0）
+        let (_producer, consumer) = spectrum::ring();
+
         Ok(Audio {
             player,
             sink,
             total: None,
+            spectrum: Analyzer::new(consumer, 44_100.0),
         })
     }
 
@@ -43,11 +53,29 @@ impl Audio {
         // Decoder::try_from(File) 自动设置 byte_len + seekable，所以能 seek
         let source = Decoder::try_from(file)?;
 
-        self.total = source.total_duration();
+        // 给这首歌建一个新的环形缓冲，把解码器包上一层分流器
+        let sample_rate = source.sample_rate().get() as f32;
+        let (producer, consumer) = spectrum::ring();
+        let tap = SpectrumTap::new(source, producer);
+
+        self.total = tap.total_duration();
         self.player.stop();
-        self.player.append(source);
+        self.player.append(tap);
         self.player.play(); // 清掉可能残留的暂停状态
+
+        // 换掉旧的分析器（旧的那个会连同旧环形缓冲一起被丢弃）
+        self.spectrum = Analyzer::new(consumer, sample_rate);
         Ok(())
+    }
+
+    /// 每帧调用一次，推进频谱计算。
+    pub fn update_spectrum(&mut self) {
+        self.spectrum.update();
+    }
+
+    /// 每根频谱柱子的高度，0.0~1.0
+    pub fn spectrum(&self) -> &[f32] {
+        self.spectrum.levels()
     }
 
     pub fn toggle_pause(&mut self) {
